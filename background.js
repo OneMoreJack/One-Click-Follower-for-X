@@ -40,21 +40,28 @@ if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
   });
 }
 
+/**
+ * Completely stops all background operations and wipes session data
+ */
 function stopAndCleanup() {
   if (activeTask) {
-    // 将所有处理中的账号恢复为 pending，避免 UI 圈圈一直转
-    const resetAccounts = activeTask.accounts.map(a => 
+    const finalAccounts = activeTask.accounts.map(a => 
       a.status === 'processing' ? { ...a, status: 'pending' } : a
     );
+    const finalStats = { ...activeTask.stats, isResting: false };
     
+    // Kill the reference IMMEDIATELY to block all pending spawnWorker/updateUI calls
+    activeTask = null;
+
+    // Notify UI to reset immediately
     chrome.runtime.sendMessage({ 
-      type: 'TASK_COMPLETE', // 使用 COMPLETE 类型让 UI 停止
-      accounts: resetAccounts,
-      stats: activeTask.stats
+      type: 'TASK_COMPLETE',
+      accounts: finalAccounts,
+      stats: finalStats
     }).catch(() => {});
   }
   
-  activeTask = null;
+  // Wipe storage so popup doesn't restore "processing" state on reopen
   chrome.storage.local.remove('taskState');
 }
 
@@ -72,13 +79,13 @@ async function startTask(accounts, speedMode) {
     stats: { success: 0, skipped: 0, failed: 0, total: accounts.length, isResting: false }
   };
 
-  // Launch initial workers
   for (let i = 0; i < Math.min(config.maxConcurrent, accounts.length); i++) {
     spawnWorker();
   }
 }
 
 async function spawnWorker() {
+  // CRITICAL: Exit if task was stopped
   if (!activeTask) return;
 
   if (activeTask.isResting) return;
@@ -99,7 +106,7 @@ async function spawnWorker() {
   try {
     const result = await followOnX(account.username);
     
-    // 如果在等待过程中任务被停止了，直接退出
+    // Check again after async I/O
     if (!activeTask) return;
 
     if (result.status === 'success') {
@@ -121,6 +128,7 @@ async function spawnWorker() {
     activeTask.stats.failed++;
   }
 
+  if (!activeTask) return;
   activeTask.activeCount--;
   updateUIAndStorage();
 
@@ -148,7 +156,7 @@ async function spawnWorker() {
   
   if (activeTask && !activeTask.isResting) {
     setTimeout(() => {
-      spawnWorker();
+      if (activeTask) spawnWorker();
     }, delay);
   }
 }
@@ -170,6 +178,7 @@ function checkTaskCompletion() {
 }
 
 function updateUIAndStorage() {
+  // If activeTask is null, we must NOT touch storage
   if (!activeTask) return;
   
   const payload = {
@@ -193,6 +202,12 @@ async function followOnX(username) {
       
       const checkLoad = setInterval(async () => {
         try {
+          // If task stopped while tab loading
+          if (!activeTask) {
+            clearInterval(checkLoad);
+            if (tab?.id) chrome.tabs.remove(tab.id).catch(() => {});
+            return;
+          }
           const t = await chrome.tabs.get(tab.id);
           if (t.status === 'complete') {
             clearInterval(checkLoad);
@@ -209,6 +224,11 @@ async function followOnX(username) {
 
       async function executeAutomation() {
         try {
+          if (!activeTask) {
+             clearTimeout(timeout);
+             if (tab?.id) chrome.tabs.remove(tab.id).catch(() => {});
+             return;
+          }
           const results = await chrome.scripting.executeScript({
             target: { tabId: tab.id },
             files: ['execute.js']
