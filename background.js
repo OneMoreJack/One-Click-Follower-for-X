@@ -1,34 +1,61 @@
 
 /**
  * Background Service Worker
- * Implements a concurrent worker pool (Semaphore) for high-speed processing
+ * Enhanced with Speed Mode and Group Breaks for safety
  */
 
 let activeTask = null;
-const MAX_CONCURRENT = 5;
-const MIN_DELAY = 1500;
-const MAX_DELAY = 2500;
+
+const SPEED_CONFIGS = {
+  fast: {
+    maxConcurrent: 3,
+    minDelay: 1000,
+    maxDelay: 3000,
+    groupSize: 5,
+    groupRest: 3000 // 快模式停顿3秒
+  },
+  medium: {
+    maxConcurrent: 3, // 中模式并发从2调到3
+    minDelay: 3000,
+    maxDelay: 6000,
+    groupSize: 5,
+    groupRest: 5000 // 中模式停顿5秒
+  },
+  slow: {
+    maxConcurrent: 2, // 慢模式并发从1调到2
+    minDelay: 6000,
+    maxDelay: 10000,
+    groupSize: 5,
+    groupRest: 7000 // 慢模式停顿7秒
+  }
+};
 
 if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'START_TASK') {
-      startConcurrentProcessing(message.accounts);
+      startTask(message.accounts, message.speedMode || 'medium');
     } else if (message.type === 'STOP_TASK') {
       activeTask = null;
     }
   });
 }
 
-async function startConcurrentProcessing(accounts) {
+async function startTask(accounts, speedMode) {
+  const config = SPEED_CONFIGS[speedMode];
+  
   activeTask = {
     accounts: accounts.map(a => ({ ...a, status: 'pending' })),
+    speedMode: speedMode,
+    config: config,
     nextIndex: 0,
     activeCount: 0,
-    stats: { success: 0, skipped: 0, failed: 0, total: accounts.length }
+    successInSession: 0,
+    isResting: false,
+    stats: { success: 0, skipped: 0, failed: 0, total: accounts.length, isResting: false }
   };
 
-  // Launch initial batch of workers
-  for (let i = 0; i < Math.min(MAX_CONCURRENT, accounts.length); i++) {
+  // Launch initial workers
+  for (let i = 0; i < Math.min(config.maxConcurrent, accounts.length); i++) {
     spawnWorker();
   }
 }
@@ -36,10 +63,14 @@ async function startConcurrentProcessing(accounts) {
 async function spawnWorker() {
   if (!activeTask) return;
 
-  // 1. Get next available account index
+  // If we are currently in a group rest period, wait
+  if (activeTask.isResting) {
+    return;
+  }
+
+  // 1. Get next account
   const currentIndex = activeTask.nextIndex++;
   
-  // 2. Check if we've reached the end of the list
   if (currentIndex >= activeTask.accounts.length) {
     checkTaskCompletion();
     return;
@@ -52,12 +83,12 @@ async function spawnWorker() {
   updateUIAndStorage();
 
   try {
-    // 3. Execute the follow automation
     const result = await followOnX(account.username);
     
     if (result.status === 'success') {
       account.status = 'success';
       activeTask.stats.success++;
+      activeTask.successInSession++;
     } else if (result.status === 'skipped') {
       account.status = 'skipped';
       activeTask.stats.skipped++;
@@ -75,106 +106,90 @@ async function spawnWorker() {
   activeTask.activeCount--;
   updateUIAndStorage();
 
-  // 4. Random delay (1.5s - 2.5s)
-  const delay = Math.floor(Math.random() * (MAX_DELAY - MIN_DELAY)) + MIN_DELAY;
+  // 2. Check for Group Break
+  if (activeTask.successInSession >= activeTask.config.groupSize && activeTask.activeCount === 0) {
+    activeTask.isResting = true;
+    activeTask.stats.isResting = true;
+    updateUIAndStorage();
+    
+    setTimeout(() => {
+      if (!activeTask) return;
+      activeTask.isResting = false;
+      activeTask.stats.isResting = false;
+      activeTask.successInSession = 0;
+      updateUIAndStorage();
+      
+      // Resume workers
+      for (let i = 0; i < activeTask.config.maxConcurrent; i++) {
+        spawnWorker();
+      }
+    }, activeTask.config.groupRest);
+    
+    return;
+  }
+
+  // 3. Standard Randomized Delay
+  const delay = Math.floor(Math.random() * (activeTask.config.maxDelay - activeTask.config.minDelay)) + activeTask.config.minDelay;
   
-  if (activeTask) {
+  if (activeTask && !activeTask.isResting) {
     setTimeout(() => {
       spawnWorker();
     }, delay);
-  } else {
-    checkTaskCompletion();
   }
 }
 
 function checkTaskCompletion() {
   if (!activeTask) return;
-  
   const allProcessed = activeTask.accounts.every(a => a.status !== 'pending' && a.status !== 'processing');
   
   if (allProcessed && activeTask.activeCount === 0) {
-    if (typeof chrome !== 'undefined' && chrome.runtime?.sendMessage) {
-      chrome.runtime.sendMessage({
-        type: 'TASK_COMPLETE',
-        accounts: activeTask.accounts,
-        stats: activeTask.stats
-      }).catch(() => {});
-    }
+    chrome.runtime.sendMessage({
+      type: 'TASK_COMPLETE',
+      accounts: activeTask.accounts,
+      stats: activeTask.stats
+    }).catch(() => {});
     
-    if (typeof chrome !== 'undefined' && chrome.storage?.local) {
-      chrome.storage.local.remove('taskState');
-    }
+    chrome.storage.local.remove('taskState');
     activeTask = null;
   }
 }
 
 function updateUIAndStorage() {
-  if (!activeTask || typeof chrome === 'undefined') return;
+  if (!activeTask) return;
   
   const payload = {
     type: 'UPDATE_PROGRESS',
     accounts: activeTask.accounts,
-    // Note: currentIndex in UI will track the highest index reached
     currentIndex: activeTask.nextIndex - 1, 
     stats: activeTask.stats
   };
   
-  if (chrome.runtime?.sendMessage) {
-    chrome.runtime.sendMessage(payload).catch(() => {
-      // Popup closed, expected behavior
-    });
-  }
-
-  if (chrome.storage?.local) {
-    chrome.storage.local.set({ 
-      taskState: {
-        accounts: activeTask.accounts,
-        currentIndex: activeTask.nextIndex - 1,
-        stats: activeTask.stats,
-        isProcessing: true
-      }
-    });
-  }
+  chrome.runtime.sendMessage(payload).catch(() => {});
+  chrome.storage.local.set({ 
+    taskState: { ...payload, isProcessing: true, speedMode: activeTask.speedMode }
+  });
 }
 
-/**
- * Core Automation Logic: Opens a hidden tab, executes script, then closes
- */
 async function followOnX(username) {
-  if (typeof chrome === 'undefined' || !chrome.tabs?.create) {
-    return { status: 'failed', error: 'Extension environment missing' };
-  }
-
   return new Promise(async (resolve) => {
     let tab;
     try {
-      tab = await chrome.tabs.create({ 
-        url: `https://x.com/${username}`, 
-        active: false 
-      });
-
-      // Polling for completion to handle SPA navigation better
-      let tabLoaded = false;
+      tab = await chrome.tabs.create({ url: `https://x.com/${username}`, active: false });
+      
       const checkLoad = setInterval(async () => {
         try {
           const t = await chrome.tabs.get(tab.id);
           if (t.status === 'complete') {
             clearInterval(checkLoad);
-            tabLoaded = true;
             executeAutomation();
           }
-        } catch (e) {
-          clearInterval(checkLoad);
-        }
+        } catch (e) { clearInterval(checkLoad); }
       }, 500);
 
-      // Timeout after 20s (faster timeout for concurrent mode)
       const timeout = setTimeout(() => {
         clearInterval(checkLoad);
-        if (!tabLoaded) {
-          if (tab?.id) chrome.tabs.remove(tab.id).catch(() => {});
-          resolve({ status: 'failed', error: 'Page load timeout' });
-        }
+        if (tab?.id) chrome.tabs.remove(tab.id).catch(() => {});
+        resolve({ status: 'failed', error: 'Page load timeout' });
       }, 20000);
 
       async function executeAutomation() {
@@ -183,23 +198,15 @@ async function followOnX(username) {
             target: { tabId: tab.id },
             files: ['execute.js']
           });
-
           clearTimeout(timeout);
           if (tab?.id) chrome.tabs.remove(tab.id).catch(() => {});
-
-          if (results && results[0]?.result) {
-            resolve(results[0].result);
-          } else {
-            resolve({ status: 'failed', error: 'Script injection failed' });
-          }
+          resolve(results?.[0]?.result || { status: 'failed', error: 'Script injection failed' });
         } catch (err) {
           clearTimeout(timeout);
           if (tab?.id) chrome.tabs.remove(tab.id).catch(() => {});
           resolve({ status: 'failed', error: err.message });
         }
       }
-    } catch (e) {
-      resolve({ status: 'failed', error: e.message });
-    }
+    } catch (e) { resolve({ status: 'failed', error: e.message }); }
   });
 }

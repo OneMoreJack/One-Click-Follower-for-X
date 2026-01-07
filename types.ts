@@ -1,11 +1,17 @@
 
+export enum SpeedMode {
+  FAST = 'fast',
+  MEDIUM = 'medium',
+  SLOW = 'slow'
+}
+
 export interface Account {
   id: string;
   username: string;
   avatar?: string;
   url: string;
   selected: boolean;
-  status: 'pending' | 'processing' | 'success' | 'skipped' | 'failed';
+  status: 'pending' | 'processing' | 'success' | 'skipped' | 'failed' | 'resting';
   error?: string;
 }
 
@@ -14,6 +20,7 @@ export interface TaskStats {
   skipped: number;
   failed: number;
   total: number;
+  isResting?: boolean;
 }
 
 export enum MessageType {

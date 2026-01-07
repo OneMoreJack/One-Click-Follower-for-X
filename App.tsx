@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { Account, TaskStats, MessageType } from './types';
+import { Account, TaskStats, MessageType, SpeedMode } from './types';
 
 declare const chrome: any;
 
@@ -8,9 +8,10 @@ const App: React.FC = () => {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [currentIndex, setCurrentIndex] = useState(-1);
-  const [stats, setStats] = useState<TaskStats>({ success: 0, skipped: 0, failed: 0, total: 0 });
+  const [stats, setStats] = useState<TaskStats>({ success: 0, skipped: 0, failed: 0, total: 0, isResting: false });
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [hasScanned, setHasScanned] = useState(false);
+  const [speedMode, setSpeedMode] = useState<SpeedMode>(SpeedMode.MEDIUM);
 
   const hasChromeApi = typeof chrome !== 'undefined' && !!chrome.runtime?.id;
   const selectedCount = useMemo(() => accounts.filter(a => a.selected).length, [accounts]);
@@ -26,6 +27,7 @@ const App: React.FC = () => {
         setCurrentIndex(result.taskState.currentIndex || -1);
         setStats(result.taskState.stats || { success: 0, skipped: 0, failed: 0, total: 0 });
         setHasScanned(true);
+        if (result.taskState.speedMode) setSpeedMode(result.taskState.speedMode);
       }
     });
 
@@ -83,7 +85,11 @@ const App: React.FC = () => {
     const selected = accounts.filter(a => a.selected);
     if (selected.length === 0 || !hasChromeApi) return;
     setIsProcessing(true);
-    chrome.runtime.sendMessage({ type: MessageType.START_TASK, accounts: selected });
+    chrome.runtime.sendMessage({ 
+      type: MessageType.START_TASK, 
+      accounts: selected,
+      speedMode 
+    });
   };
 
   const stopTask = () => {
@@ -93,7 +99,6 @@ const App: React.FC = () => {
 
   return (
     <div className="flex flex-col h-full bg-white text-[#0f1419] selection:bg-[#0f1419]/10">
-      {/* Header */}
       <header className="px-4 py-3 flex items-center justify-between border-b border-[#eff3f4] bg-white z-10">
         <div className="flex items-center gap-2">
           <div className="w-7 h-7 bg-black rounded-full flex items-center justify-center">
@@ -105,14 +110,13 @@ const App: React.FC = () => {
           <button 
             onClick={extractAccountsFromPage}
             disabled={isProcessing}
-            className="text-xs font-bold px-3 py-1.5 rounded-full border border-[#cfd9de] hover:bg-[#0f1419]/5 transition-colors"
+            className="text-xs font-bold px-3 py-1.5 rounded-full border border-[#cfd9de] hover:bg-[#0f1419]/5 transition-colors disabled:opacity-50"
           >
             Rescan
           </button>
         )}
       </header>
 
-      {/* Main Content Area */}
       <main className="flex-1 flex flex-col min-h-0 relative">
         {!hasScanned ? (
           <div className="flex-1 flex flex-col items-center justify-center p-8 text-center">
@@ -130,7 +134,41 @@ const App: React.FC = () => {
           </div>
         ) : (
           <>
-            {/* Stats Dashboard */}
+            <div className="bg-[#f7f9f9] px-4 py-3 border-b border-[#eff3f4]">
+              <div className="flex justify-between items-center mb-3">
+                <span className="text-[10px] font-bold text-[#536471] uppercase tracking-widest">Speed Settings</span>
+                {speedMode === SpeedMode.FAST && (
+                  <span className="text-[10px] font-bold text-orange-600 animate-pulse flex items-center gap-1">
+                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" /></svg>
+                    High Risk
+                  </span>
+                )}
+              </div>
+              <div className="flex bg-[#eff3f4] p-1 rounded-full relative">
+                {[
+                  { label: 'Slow', mode: SpeedMode.SLOW },
+                  { label: 'Medium', mode: SpeedMode.MEDIUM },
+                  { label: 'Fast', mode: SpeedMode.FAST }
+                ].map((option) => (
+                  <button
+                    key={option.mode}
+                    disabled={isProcessing}
+                    onClick={() => setSpeedMode(option.mode)}
+                    className={`flex-1 py-1.5 rounded-full text-[11px] font-bold transition-all duration-200 ${
+                      speedMode === option.mode 
+                        ? 'bg-white text-black shadow-sm' 
+                        : 'text-[#536471] hover:text-black'
+                    } disabled:opacity-50`}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+              {speedMode === SpeedMode.MEDIUM && <p className="text-[10px] text-[#536471] mt-2 text-center">3 workers • 3-6s interval • 5s rest</p>}
+              {speedMode === SpeedMode.SLOW && <p className="text-[10px] text-[#536471] mt-2 text-center">2 workers • 6-10s interval • 7s rest</p>}
+              {speedMode === SpeedMode.FAST && <p className="text-[10px] text-orange-600 mt-2 text-center">3 workers • 1-3s interval • 3s rest</p>}
+            </div>
+
             {(isProcessing || stats.total > 0) && (
               <div className="bg-[#f7f9f9] px-4 py-3 flex justify-between items-center border-b border-[#eff3f4]">
                 <div className="flex gap-4">
@@ -143,6 +181,12 @@ const App: React.FC = () => {
                     <p className="text-sm font-black text-red-600">{stats.failed}</p>
                   </div>
                 </div>
+                {stats.isResting && (
+                  <div className="flex items-center gap-1.5 px-3 py-1 bg-black text-white rounded-full">
+                    <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
+                    <span className="text-[10px] font-bold uppercase tracking-wider">Resting...</span>
+                  </div>
+                )}
                 <div className="text-right">
                   <p className="text-[10px] font-bold text-[#536471]">PROGRESS</p>
                   <p className="text-sm font-black">{Math.round(((stats.success + stats.skipped + stats.failed) / (stats.total || 1)) * 100)}%</p>
@@ -150,7 +194,6 @@ const App: React.FC = () => {
               </div>
             )}
 
-            {/* List Header */}
             <div className="px-4 py-2 bg-white flex items-center justify-between border-b border-[#eff3f4]">
               <label className="flex items-center gap-2 cursor-pointer group">
                 <input
@@ -168,7 +211,6 @@ const App: React.FC = () => {
               <span className="text-[10px] font-bold text-[#536471] uppercase tracking-widest">{accounts.length} Profiles</span>
             </div>
 
-            {/* Scrollable List */}
             <div className="flex-1 overflow-y-auto list-container">
               <ul className="divide-y divide-[#eff3f4]">
                 {accounts.map((acc, idx) => (
@@ -202,8 +244,9 @@ const App: React.FC = () => {
                     <div className="ml-2 shrink-0">
                       {acc.status === 'processing' && <div className="w-4 h-4 border-2 border-black border-t-transparent rounded-full animate-spin"></div>}
                       {acc.status === 'success' && <div className="w-5 h-5 bg-black rounded-full flex items-center justify-center"><svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7" /></svg></div>}
-                      {acc.status === 'failed' && <span className="text-red-600 font-bold text-[10px] border border-red-600 px-1 rounded">FAIL</span>}
+                      {acc.status === 'failed' && <span className="text-red-600 font-bold text-[10px] border border-red-600 px-1 rounded" title={acc.error}>FAIL</span>}
                       {acc.status === 'skipped' && <span className="text-[#536471] font-bold text-[10px]">SKIP</span>}
+                      {acc.status === 'resting' && <span className="text-blue-500 font-bold text-[10px] animate-pulse">REST</span>}
                     </div>
                   </li>
                 ))}
@@ -213,7 +256,6 @@ const App: React.FC = () => {
         )}
       </main>
 
-      {/* Footer Actions */}
       {hasScanned && (
         <footer className="p-4 bg-white border-t border-[#eff3f4]">
           {!isProcessing ? (
