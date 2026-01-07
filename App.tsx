@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Account, TaskStats, MessageType, SpeedMode } from './types';
 
 declare const chrome: any;
@@ -10,6 +10,7 @@ const App: React.FC = () => {
   const [currentIndex, setCurrentIndex] = useState(-1);
   const [stats, setStats] = useState<TaskStats>({ success: 0, skipped: 0, failed: 0, total: 0, isResting: false });
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [isScanning, setIsScanning] = useState(true); // 默认初始为扫描状态
   const [hasScanned, setHasScanned] = useState(false);
   const [speedMode, setSpeedMode] = useState<SpeedMode>(SpeedMode.MEDIUM);
 
@@ -17,9 +18,47 @@ const App: React.FC = () => {
   const selectedCount = useMemo(() => accounts.filter(a => a.selected).length, [accounts]);
   const allSelected = useMemo(() => accounts.length > 0 && accounts.every(a => a.selected), [accounts]);
 
-  useEffect(() => {
+  const extractAccountsFromPage = useCallback(() => {
     if (!hasChromeApi) return;
+    setIsScanning(true);
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs: any) => {
+      if (tabs[0]?.id) {
+        chrome.scripting.executeScript({
+          target: { tabId: tabs[0].id },
+          files: ['content.js']
+        }, (results: any) => {
+          setIsScanning(false);
+          setHasScanned(true);
+          if (results && results[0]?.result) {
+            const extracted = results[0].result;
+            const newAccounts: Account[] = extracted.map((item: any) => ({
+              id: Math.random().toString(36).substr(2, 9),
+              username: item.username,
+              avatar: item.avatar || undefined,
+              url: `https://x.com/${item.username}`,
+              selected: true,
+              status: 'pending'
+            }));
+            setAccounts(newAccounts);
+            setErrorMsg(null);
+          } else {
+            setAccounts([]);
+            setErrorMsg("No accounts found on this page.");
+          }
+        });
+      } else {
+        setIsScanning(false);
+      }
+    });
+  }, [hasChromeApi]);
 
+  useEffect(() => {
+    if (!hasChromeApi) {
+      setIsScanning(false);
+      return;
+    }
+
+    // 1. 先尝试恢复历史状态
     chrome.storage?.local.get(['taskState'], (result: any) => {
       if (result.taskState) {
         setAccounts(result.taskState.accounts || []);
@@ -27,7 +66,11 @@ const App: React.FC = () => {
         setCurrentIndex(result.taskState.currentIndex || -1);
         setStats(result.taskState.stats || { success: 0, skipped: 0, failed: 0, total: 0 });
         setHasScanned(true);
+        setIsScanning(false);
         if (result.taskState.speedMode) setSpeedMode(result.taskState.speedMode);
+      } else {
+        // 2. 如果没有运行中的任务，自动触发扫描
+        extractAccountsFromPage();
       }
     });
 
@@ -49,37 +92,7 @@ const App: React.FC = () => {
 
     chrome.runtime.onMessage.addListener(listener);
     return () => chrome.runtime.onMessage.removeListener(listener);
-  }, [hasChromeApi]);
-
-  const extractAccountsFromPage = () => {
-    if (!hasChromeApi) return;
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs: any) => {
-      if (tabs[0]?.id) {
-        chrome.scripting.executeScript({
-          target: { tabId: tabs[0].id },
-          files: ['content.js']
-        }, (results: any) => {
-          setHasScanned(true);
-          if (results && results[0]?.result) {
-            const extracted = results[0].result;
-            const newAccounts: Account[] = extracted.map((item: any) => ({
-              id: Math.random().toString(36).substr(2, 9),
-              username: item.username,
-              avatar: item.avatar || undefined,
-              url: `https://x.com/${item.username}`,
-              selected: true,
-              status: 'pending'
-            }));
-            setAccounts(newAccounts);
-            setErrorMsg(null);
-          } else {
-            setAccounts([]);
-            setErrorMsg("No accounts found on this page.");
-          }
-        });
-      }
-    });
-  };
+  }, [hasChromeApi, extractAccountsFromPage]);
 
   const startTask = () => {
     const selected = accounts.filter(a => a.selected);
@@ -94,7 +107,6 @@ const App: React.FC = () => {
 
   const stopTask = () => {
     setIsProcessing(false);
-    // 立即重置 UI 中的加载圈，将 processing 改为 pending
     setAccounts(prev => prev.map(a => a.status === 'processing' ? { ...a, status: 'pending' } : a));
     if (hasChromeApi) {
       chrome.runtime.sendMessage({ type: MessageType.STOP_TASK });
@@ -110,7 +122,7 @@ const App: React.FC = () => {
           </div>
           <span className="font-black text-base tracking-tight">Follower Pro</span>
         </div>
-        {hasScanned && (
+        {!isScanning && (
           <button 
             onClick={extractAccountsFromPage}
             disabled={isProcessing}
@@ -122,18 +134,23 @@ const App: React.FC = () => {
       </header>
 
       <main className="flex-1 flex flex-col min-h-0 relative">
-        {!hasScanned ? (
+        {isScanning ? (
+          <div className="flex-1 flex flex-col items-center justify-center p-8">
+            <div className="w-8 h-8 border-3 border-black border-t-transparent rounded-full animate-spin mb-4"></div>
+            <p className="text-[#536471] text-sm font-bold">Scanning page for profiles...</p>
+          </div>
+        ) : !hasScanned || accounts.length === 0 ? (
           <div className="flex-1 flex flex-col items-center justify-center p-8 text-center">
             <div className="w-16 h-16 bg-[#f7f9f9] rounded-full flex items-center justify-center mb-4">
-              <svg className="w-8 h-8 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+              <svg className="w-8 h-8 text-[#536471]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
             </div>
-            <h2 className="text-xl font-black mb-2">Find your community</h2>
-            <p className="text-[#536471] text-sm mb-8 leading-relaxed px-4">Extract profiles from the current tab and start building your network in bulk.</p>
+            <h2 className="text-xl font-black mb-2">No profiles found</h2>
+            <p className="text-[#536471] text-sm mb-8 leading-relaxed px-4">Try navigating to an X profile list or search results and click Rescan.</p>
             <button 
               onClick={extractAccountsFromPage}
               className="w-full bg-[#0f1419] text-white py-3.5 rounded-full font-bold text-sm hover:bg-[#272c30] transition-all shadow-sm active:scale-95"
             >
-              Scan Current Page
+              Rescan Page
             </button>
           </div>
         ) : (
@@ -168,9 +185,6 @@ const App: React.FC = () => {
                   </button>
                 ))}
               </div>
-              {speedMode === SpeedMode.MEDIUM && <p className="text-[10px] text-[#536471] mt-2 text-center">3 workers • 3-6s interval • 5s rest</p>}
-              {speedMode === SpeedMode.SLOW && <p className="text-[10px] text-[#536471] mt-2 text-center">2 workers • 6-10s interval • 7s rest</p>}
-              {speedMode === SpeedMode.FAST && <p className="text-[10px] text-orange-600 mt-2 text-center">3 workers • 1-3s interval • 3s rest</p>}
             </div>
 
             {(isProcessing || stats.total > 0) && (
@@ -260,7 +274,7 @@ const App: React.FC = () => {
         )}
       </main>
 
-      {hasScanned && (
+      {hasScanned && !isScanning && accounts.length > 0 && (
         <footer className="p-4 bg-white border-t border-[#eff3f4]">
           {!isProcessing ? (
             <button
