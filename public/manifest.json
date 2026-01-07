@@ -1,7 +1,7 @@
 
 {
   "manifest_version": 3,
-  "name": "X Batch Follower Pro",
+  "name": "X Batch Follower",
   "version": "1.0.0",
   "description": "Smartly extract X (Twitter) accounts from any webpage and follow them automatically.",
   "permissions": [
