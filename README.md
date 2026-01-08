@@ -1,9 +1,24 @@
 # One-Click Follower for X
 
+English | [简体中文](README_zh.md)
+
 <div align="center">
   <img src="public/icons/icon-128.png" width="128" height="128" alt="One-Click Follower for X Icon" />
   <p><strong>Smartly extract X (Twitter) accounts from any webpage and follow them automatically.</strong></p>
 </div>
+
+---
+
+## 📥 Download and Install (Recommended)
+
+For the easiest installation without compiling the source code:
+
+1.  Go to the [Releases](https://github.com/OneMoreJack/One-Click-Follower-for-X/releases) page.
+2.  Download the latest `xxx.zip` file.
+3.  Unzip the file into a folder on your computer.
+4.  Open Chrome and navigate to `chrome://extensions/`.
+5.  Enable **Developer mode** in the top right corner.
+6.  Click **Load unpacked** and select the folder you just unzipped.
 
 ---
 
@@ -16,9 +31,9 @@
 
 ---
 
-## 🛠 Installation (Developer Mode)
+## 🛠 Installation (From Source)
 
-To run this extension in Chrome while in development:
+To run this extension in Chrome from the source code:
 
 1.  **Clone the repository**:
     ```bash
@@ -29,7 +44,6 @@ To run this extension in Chrome while in development:
 2.  **Install dependencies**:
     ```bash
     pnpm install
-    # or npm install / yarn
     ```
 
 3.  **Build the project**:
